@@ -39,7 +39,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 # ─── Config / env ─────────────────────────────────────────────────────────
 load_dotenv()
-DATA_DIR = Path(os.getenv("DATA_DIR", "./data"))
+DATA_DIR = Path(os.getenv("DATA_DIR", "../data"))  # Go up one level to find data directory
 USE_EMU  = os.getenv("USE_EMULATOR") == "1" or platform.system() in {"Windows", "Darwin"}
 
 WIDTH, HEIGHT = 240, 240
@@ -58,10 +58,11 @@ def load_catalog() -> Dict:
         }
 
     • Supports the **TinyDB** schema produced by main.py:
-        {"objects": {"1": {...}, "2": {...}}}
-
-    • Also supports the original flat list schema:
+        {"objects": {"1": {...}, "2": {...}}}    • Also supports the original flat list schema:
         {"objects": [{...}, {...}]}
+
+    • Also supports direct list format:
+        [{...}, {...}]
     """
     categories, all_objects = [], []
 
@@ -74,15 +75,25 @@ def load_catalog() -> Dict:
 
         try:
             with json_file.open() as fp:
-                raw = json.load(fp)
-
-            # TinyDB table            → dict of rows
-            # Hand-made / legacy file → list
-            objects_iter = (
-                raw["objects"].values()
-                if isinstance(raw.get("objects"), dict)
-                else raw.get("objects", [])
-            )
+                raw = json.load(fp)            # Handle different data formats:
+            # TinyDB table            → dict with objects property: {"objects": {"1": {...}, "2": {...}}}
+            # Hand-made / legacy file → dict with objects list: {"objects": [{...}, {...}]}
+            # Direct list file        → list directly: [{...}, {...}]
+            if isinstance(raw, list):
+                # Direct list format
+                objects_iter = raw
+            elif isinstance(raw, dict) and "objects" in raw:
+                # Dict with objects property
+                objects_data = raw["objects"]
+                objects_iter = (
+                    objects_data.values()
+                    if isinstance(objects_data, dict)
+                    else objects_data if isinstance(objects_data, list)
+                    else []
+                )
+            else:
+                # Unknown format, skip
+                objects_iter = []
 
             categories.append({"id": cat_id, "name": cat_name})
 
@@ -231,9 +242,17 @@ class WorldDexUI:
 
             else:  # DESCRIPTION
                 obj = self.get_current_obj()
-                facts = "\n".join(obj.get("facts", [])[:3]) if obj else "(no data)"
-                wrapper = textwrap.TextWrapper(width=30)
-                lines = wrapper.wrap(f"{obj['name'] if obj else ''}: {facts}")
+                if obj:
+                    # Try different field names for the description/facts
+                    description = obj.get("description") or obj.get("facts") or "(no description available)"
+                    if isinstance(description, list):
+                        # If facts is a list, join the first few items
+                        description = "\n".join(description[:3])
+                    wrapper = textwrap.TextWrapper(width=30)
+                    lines = wrapper.wrap(f"{obj['name']}: {description}")
+                else:
+                    lines = ["(no data)"]
+                
                 for ln in lines:
                     if y > HEIGHT - LINE_H:
                         break
@@ -261,7 +280,7 @@ class WorldDexUI:
             self.sel_idx = (self.sel_idx + (-1 if key == "up" else 1)) % (max_idx + 1)
 
         elif key == "ok":
-            if self.state == STATE_CAT and self.cat:
+            if self.state == STATE_CAT and self.cat and self.sel_idx < len(self.cat):
                 self.active_cat_id = self.cat[self.sel_idx]["id"]
                 self.sel_idx = 0
                 self.state = STATE_OBJ

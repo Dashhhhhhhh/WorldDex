@@ -1,255 +1,207 @@
-"""world_dex/main.py
-─────────────────────
-A minimal backend + CLI for the World-Dex gadget.
+#!/usr/bin/env python3
+"""main.py — World‑Dex object ingester (OpenAI‑client ≥ 1.0 & DeepSeek)
+──────────────────────────────────────────────────────────────────────────
+Add a new object (e.g. a plant, rock, animal) to your World‑Dex catalogue:
 
-NEW 2025-06-17
-──────────────
-• Fingerprints are now written as a Base-64 string (≈ 4 KB) instead of a
-  768-element float list (≈ 30 KB).  Legacy list-style vectors remain
-  readable for smooth migration.
+    python main.py "Giant Sequoia"
 
-Environment variables (all optional)
-────────────────────────────────────
-    DATA_DIR        – where ``*.json`` files live (default: ./data)
-    OPENAI_API_KEY  – for descriptions / Q&A
-    DEEPSEEK_API_KEY
-    EMBED_DIM       – embedding length (default 768)
-    SIM_THRESHOLD   – cosine dedupe threshold (0.85)
+Key features
+─────────────
+1. **LLM‑driven categorisation** – Ask an LLM for the best *broad, plural*
+   category (e.g. "trees", "minerals", "mammals").
+2. **Provider‑agnostic** – Works with OpenAI *or* DeepSeek (or any other
+   OpenAI‑compatible endpoint) using the **≥ 1.0** client API.
+3. **.env auto‑loading** – Secrets can live in `.env` (variable names are
+   case‑insensitive, e.g. `deepseek_api_key`).
+4. **Self‑building catalogue** – Each category lives in its own JSON file in
+   `./data`, created on‑the‑fly when first used.
+5. **Duplicate‑safe & legacy‑aware** – Detects duplicates even if old JSON
+   files store entries as plain strings (pre‑v2 format).
 """
 from __future__ import annotations
 
-import argparse
-import asyncio
-import base64
-import os
-import re
-import uuid
-from datetime import datetime
-from typing import List, Optional, Union
+import datetime as _dt
+import json as _json
+import os as _os
+import pathlib as _pl
+import sys as _sys
+from typing import List as _List, Tuple as _Tuple
 
-import numpy as np
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field  # noqa: F401  (Field kept for possible future use)
-from tinydb import TinyDB, Query
+# ───────────────────────────── Optional .env loader ─────────────────────────────
+try:
+    from dotenv import load_dotenv as _load_dotenv  # type: ignore
+    _load_dotenv()
+except ModuleNotFoundError:
+    # No local secrets file – rely on process env.
+    pass
 
-# ─── ENV ───────────────────────────────────────────────────────────────────
-load_dotenv()
-DATA_DIR      = os.getenv("DATA_DIR", "./data")
-OPENAI_KEY    = os.getenv("OPENAI_API_KEY")
-DEEPSEEK_KEY  = os.getenv("DEEPSEEK_API_KEY")
-EMBED_DIM     = int(os.getenv("EMBED_DIM", "768"))
-SIM_THRESHOLD = float(os.getenv("SIM_THRESHOLD", "0.85"))
+# ───────────────────────────── OpenAI‑compatible client ─────────────────────────
+try:
+    from openai import OpenAI as _OpenAI  # ≥ 1.0 style client
+except ModuleNotFoundError as exc:
+    _sys.stderr.write("❗️ Install the 'openai' package (>=1.0):  pip install --upgrade openai\n")
+    raise exc
 
-os.makedirs(DATA_DIR, exist_ok=True)
+# Case‑insensitive env lookup helper
+_getenv = _os.getenv
 
-# ─── FINGERPRINT ENC/DEC ──────────────────────────────────────────────────
-def _encode_fp(vec: List[float] | np.ndarray) -> str:
-    """float32 → bytes → b64 str."""
-    return base64.b64encode(np.asarray(vec, np.float32).tobytes()).decode("ascii")
+def _env(name: str) -> str | None:
+    return _getenv(name) or _getenv(name.lower())
 
+# Gather credentials / endpoints
+_OPENAI_KEY = _env("OPENAI_API_KEY")
+_OPENAI_BASE = _env("OPENAI_API_BASE") or "https://api.openai.com/v1"
+_DEEPSEEK_KEY = _env("DEEPSEEK_API_KEY")
+_DEEPSEEK_BASE = _env("DEEPSEEK_API_BASE") or "https://api.deepseek.com/v1"
 
-def _decode_fp(b64: str) -> np.ndarray:
-    """b64 str → float32 ndarray."""
-    return np.frombuffer(base64.b64decode(b64.encode("ascii")), dtype=np.float32)
-
-
-def _fp_to_array(fp: Union[str, List[float]]) -> np.ndarray:
-    """Return an ndarray regardless of storage style (b64 str or raw list)."""
-    if isinstance(fp, str):
-        return _decode_fp(fp)
-    return np.asarray(fp, dtype=np.float32)
-
-
-# ─── DB HELPERS ───────────────────────────────────────────────────────────
-def _slug(name: str) -> str:
-    """Convert *Trees & Shrubs* → *trees_shrubs* for filenames."""
-    return re.sub(r"[^A-Za-z0-9]+", "_", name.strip().lower()).strip("_")
-
-
-def db_for_category(category: str) -> TinyDB:
-    """Return TinyDB bound to ``./data/<slug>.json`` (creates if missing)."""
-    fname = f"{_slug(category)}.json"
-    return TinyDB(os.path.join(DATA_DIR, fname), indent=2, ensure_ascii=False)
-
-
-# ─── NUMERIC ───────────────────────────────────────────────────────────────
-def cosine(a: np.ndarray, b: np.ndarray) -> float:
-    return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)))
-
-
-# ─── LLM CALL ─────────────────────────────────────────────────────────────
-async def call_llm(context: str, prompt: str) -> str:
-    """Ask OpenAI or DeepSeek; falls back if no key is set."""
-    if OPENAI_KEY:
-        from openai import OpenAI  # type: ignore
-        client = OpenAI(api_key=OPENAI_KEY)
-        r = client.chat.completions.create(
-            model="gpt-4o-mini",
-            max_tokens=128,
-            messages=[
-                {"role": "system", "content": "You are a concise, factual object encyclopedia."},
-                {"role": "user", "content": f"{context}\n\n{prompt}"},
-            ],
-            timeout=20,
-        )
-        return r.choices[0].message.content.strip()
-
-    if DEEPSEEK_KEY:
-        import httpx  # type: ignore
-        r = httpx.post(
-            "https://api.deepseek.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {DEEPSEEK_KEY}"},
-            json={
-                "model": "deepseek-chat",
-                "max_tokens": 128,
-                "messages": [
-                    {"role": "system", "content": "You are a concise, factual object encyclopedia."},
-                    {"role": "user", "content": f"{context}\n\n{prompt}"},
-                ],
-            },
-            timeout=20,
-        )
-        r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"].strip()
-
-    raise RuntimeError("No LLM key configured.")
-
-
-# ─── QUICK-ADD (CLI) ──────────────────────────────────────────────────────
-def quick_add(name: str, category: str) -> str:
-    """Insert ``name`` into ``category`` JSON file (creates file if needed)."""
-    db   = db_for_category(category)
-    ObjQ = Query()
-
-    # 1) deduplicate by name
-    existing = db.table("objects").get(ObjQ.name == name)
-    if existing:
-        return existing["id"]
-
-    # 2) placeholder embedding
-    vec = np.random.default_rng().normal(size=EMBED_DIM).astype("float32")
-
-    # 3) description
-    try:
-        desc = asyncio.run(
-            call_llm(f"Object: {name}", "Give a one-sentence encyclopedic description.")
-        )
-    except Exception:
-        desc = f"{name} recorded in the World-Dex."
-
-    obj_id = str(uuid.uuid4())
-    db.table("objects").insert(
-        {
-            "id": obj_id,
-            "name": name,
-            "fingerprint": _encode_fp(vec),  # << clean storage
-            "thumbnail_url": None,
-            "date_first_seen": datetime.utcnow().isoformat(),
-            "facts": [desc],
-        }
-    )
-    return obj_id
-
-
-# ─── FASTAPI TYPES ────────────────────────────────────────────────────────
-class ScanIn(BaseModel):
-    name: str
-    category: str
-    fingerprint: Optional[List[float]] = None      # caller can still send raw list
-    thumbnail_url: Optional[str] = None
-
-
-class ScanOut(BaseModel):
-    object_id: str
-    status: str  # "new" or "known"
-
-
-class AskIn(BaseModel):
-    object_id: str
-    category: str
-    question: str
-
-
-class AskOut(BaseModel):
-    answer: str
-
-
-# ─── FASTAPI APP ──────────────────────────────────────────────────────────
-app = FastAPI(title="World-Dex backend (one-file-per-category)")
-
-
-@app.post("/scan", response_model=ScanOut)
-async def scan(item: ScanIn):
-    db   = db_for_category(item.category)
-    ObjQ = Query()
-
-    # Normalise incoming fingerprint (if provided) for comparisons
-    incoming_vec: Optional[np.ndarray] = (
-        None if item.fingerprint is None else np.asarray(item.fingerprint, dtype=np.float32)
+if _OPENAI_KEY:
+    _CLIENT = _OpenAI(api_key=_OPENAI_KEY, base_url=_OPENAI_BASE)
+elif _DEEPSEEK_KEY:
+    _CLIENT = _OpenAI(api_key=_DEEPSEEK_KEY, base_url=_DEEPSEEK_BASE)
+else:
+    raise RuntimeError(
+        "Set OPENAI_API_KEY/openai_api_key or DEEPSEEK_API_KEY/deepseek_api_key (via env vars or .env file)."
     )
 
-    # 1) duplicate detection – by fingerprint
-    if incoming_vec is not None:
-        for row in db.table("objects"):
-            row_vec = _fp_to_array(row["fingerprint"])
-            if cosine(row_vec, incoming_vec) >= SIM_THRESHOLD:
-                return ScanOut(object_id=row["id"], status="known")
+_DEFAULT_MODEL = _env("LLM_MODEL") or ("gpt-4o-mini" if _OPENAI_KEY else "deepseek-chat")
 
-    # 2) duplicate detection – by name
-    existing = db.table("objects").get(ObjQ.name == item.name)
-    if existing:
-        return ScanOut(object_id=existing["id"], status="known")
+# ─────────────────────────────── I/O helpers ────────────────────────────────────
 
-    # 3) new entry
-    obj_id = str(uuid.uuid4())
-    vec    = incoming_vec if incoming_vec is not None else np.random.default_rng().normal(
-        size=EMBED_DIM
-    ).astype("float32")
+_DATA_DIR = _pl.Path(__file__).with_suffix("").parent / "data"
+_DATA_DIR.mkdir(exist_ok=True)
 
-    db.table("objects").insert(
-        {
-            "id":      obj_id,
-            "name":    item.name,
-            "fingerprint": _encode_fp(vec),          # << clean storage
-            "thumbnail_url": item.thumbnail_url,
-            "date_first_seen": datetime.utcnow().isoformat(),
-            "facts":   [f"{item.name} was first scanned on {datetime.utcnow():%B %d %Y}."],
-        }
+# unified chat helper (OpenAI client v1 style)
+
+def _chat(
+    system: str,
+    user: str,
+    *,
+    max_tokens: int = 64,
+    temperature: float = 0.3,
+    model: str | None = None,
+) -> str:
+    """Send a chat completion request and return the assistant's text."""
+    resp = _CLIENT.chat.completions.create(
+        model=model or _DEFAULT_MODEL,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        max_tokens=max_tokens,
+        temperature=temperature,
     )
-    return ScanOut(object_id=obj_id, status="new")
+    return resp.choices[0].message.content.strip()
+
+# ─────────────────────── Taxonomy + description helpers ─────────────────────────
+
+def _pluralise(noun: str) -> str:
+    noun = noun.lower().strip()
+    if noun.endswith("s"):
+        return noun
+    if noun.endswith("y") and noun[-2] not in "aeiou":
+        return noun[:-1] + "ies"
+    if noun.endswith(("sh", "ch", "x", "z")):
+        return noun + "es"
+    return noun + "s"
 
 
-@app.post("/ask", response_model=AskOut)
-async def ask(q: AskIn):
-    db   = db_for_category(q.category)
-    ObjQ = Query()
-    obj  = db.table("objects").get(ObjQ.id == q.object_id)
-    if not obj:
-        raise HTTPException(404, "object not found in this category")
-
-    context = (
-        f"Object: {obj['name']}\n"
-        f"Category: {q.category}\n"
-        f"First seen: {obj['date_first_seen']}\n"
-        f"Thumbnail: {obj.get('thumbnail_url', 'N/A')}\n"
-        "Known facts:\n" + "\n".join("• " + f for f in obj["facts"])
+def infer_category(obj_name: str, existing: _List[str]) -> str:
+    """Ask LLM for best category; ensures plural, lowercase."""
+    system = (
+        "You are a taxonomist for a handheld field notebook named World‑Dex. "
+        "Given an object name and a list of existing categories, reply with the single best category for the object. "
+        "Use lowercase, plural nouns (e.g. 'trees', 'minerals', 'mammals'). "
+        "If none of the existing categories suit the object, invent a new one following the same format. "
+        "Reply with only the category word, nothing else."
     )
-    answer = await call_llm(context, q.question)
-    return AskOut(answer=answer)
+    user = f"Object: {obj_name}\nExisting categories: {', '.join(existing) if existing else '(none)'}"
+    suggestion = _chat(system, user, max_tokens=8)
+    return _pluralise(suggestion)
 
 
-# ─── CLI ENTRY-POINT ──────────────────────────────────────────────────────
+def generate_description(obj_name: str) -> str:
+    system = (
+        "You are a concise but vivid field guide. In 1–2 sentences, describe the object so a curious hiker "
+        "would recognise it in the wild. Avoid encyclopaedic dryness; keep it practical and engaging."
+    )
+    user = f"Describe: {obj_name}"
+    return _chat(system, user, max_tokens=96, temperature=0.7)
+
+# ─────────────────────────────── JSON persistence ───────────────────────────────
+
+def _load(path: _pl.Path) -> list:
+    if path.exists():
+        with path.open("r", encoding="utf-8") as f:
+            return _json.load(f)
+    return []
+
+
+def _save(path: _pl.Path, data: list) -> None:
+    with path.open("w", encoding="utf-8") as f:
+        _json.dump(data, f, indent=2, ensure_ascii=False)
+
+# ────────────────────────────── Legacy migration ────────────────────────────────
+
+def _upgrade_entries(entries: list) -> _Tuple[list, bool]:
+    """Ensure each entry is a dict with 'name'. Return (new_entries, changed)."""
+    changed = False
+    upgraded: list = []
+    for e in entries:
+        if isinstance(e, dict) and "name" in e:
+            upgraded.append(e)
+        elif isinstance(e, str):  # pre‑v2 simple string format
+            upgraded.append({
+                "name": e,
+                "description": "",  # unknown old description
+                "added": "",  # unknown timestamp
+            })
+            changed = True
+        else:
+            # Skip unrecognised items but mark as changed so we rewrite clean list
+            changed = True
+    return upgraded, changed
+
+# ─────────────────────────────────── main() ─────────────────────────────────────
+
+def main() -> None:
+    if len(_sys.argv) != 2:
+        _sys.stderr.write("Usage: python main.py \"Object Name\"\n")
+        _sys.exit(1)
+
+    obj_name = _sys.argv[1].strip()
+    if not obj_name:
+        _sys.stderr.write("Object name cannot be empty.\n")
+        _sys.exit(1)
+
+    existing_cats = [p.stem for p in _DATA_DIR.glob("*.json")]
+    category = infer_category(obj_name, existing_cats)
+    file_path = _DATA_DIR / f"{category}.json"
+
+    entries = _load(file_path)
+    entries, upgraded = _upgrade_entries(entries)
+    if upgraded:
+        _save(file_path, entries)  # write back migrated data before further ops
+
+    # Duplicate check (case‑insensitive)
+    if any(e["name"].lower() == obj_name.lower() for e in entries):
+        print(f"⚠️  '{obj_name}' already exists in category '{category}'. Nothing was added.")
+        return
+
+    description = generate_description(obj_name)
+    new_entry = {
+        "name": obj_name,
+        "description": description,
+        "added": _dt.datetime.utcnow().isoformat(timespec="seconds"),
+    }
+    entries.append(new_entry)
+    _save(file_path, entries)
+
+    rel = file_path.relative_to(_DATA_DIR.parent)
+    print(f"✔ Added '{obj_name}' to {rel}")
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(prog="World-Dex CLI (category-file)")
-    parser.add_argument("name", help="Object name, e.g. 'Maple Tree'")
-    parser.add_argument(
-        "--category",
-        "-c",
-        help="Category (default: last word pluralised)",
-    )
-    args = parser.parse_args()
-
-    category = args.category or (args.name.split()[-1].capitalize() + "s")
-    oid = quick_add(args.name, category)
-    print(f"✅ {args.name} added to '{category}'  → id: {oid}")
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nOperation cancelled by user.")
