@@ -13,9 +13,9 @@ World‑Dex handheld UI for a 240 × 240 ST7789 IPS display
   Pygame emulator (default when run on Windows/macOS or when the env‑var
   `USE_EMULATOR=1`).
 
-• Reads your catalog *directly* from the TinyDB JSON file that the backend
-  stores (`DATA_DIR/worlddex_<USER_ID>.json`), so no extra HTTP endpoints are
-  required.
+• Reads your catalog from individual category JSON files in the data directory
+  (e.g., `DATA_DIR/trees.json`, `DATA_DIR/minerals.json`), with each file
+  containing objects for that specific category.
 
 • Controls
   ─────────
@@ -38,7 +38,6 @@ pip install luma.lcd luma.emulator pygame  # display + emulator
 Env‑vars (`.env`)
 ─────────────────
 ```
-USER_ID=alice
 DATA_DIR=./data
 USE_EMULATOR=1           # 1 = always Pygame, 0 = auto‑detect
 SPI_SPEED_HZ=40000000    # if you *are* on hardware (must be in whitelist)
@@ -63,9 +62,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 # ─── Config / env ─────────────────────────────────────────────────────────
 load_dotenv()
-USER_ID  = os.getenv("USER_ID", "demo")
 DATA_DIR = Path(os.getenv("DATA_DIR", "./data"))
-CAT_FILE = DATA_DIR / f"worlddex_{USER_ID}.json"
 USE_EMU  = os.getenv("USE_EMULATOR") == "1" or platform.system() in {"Windows", "Darwin"}
 
 WIDTH, HEIGHT = 240, 240
@@ -73,15 +70,43 @@ BORDER   = 6
 LINE_GAP = 2
 FONT_SZ  = int(os.getenv("FONT_SIZE", "18"))
 
-# ─── tiny helper to read catalog ─────────────────────────────────────────
+# ─── tiny helper to read catalog from category files ─────────────────────
 def load_catalog() -> Dict:
-    if not CAT_FILE.exists():
+    """Load catalog from individual category JSON files"""
+    categories = []
+    all_objects = []
+    
+    # Scan data directory for category JSON files
+    if not DATA_DIR.exists():
         return {"categories": [], "objects": []}
-    with CAT_FILE.open() as fp:
-        data = json.load(fp)
+    
+    for json_file in DATA_DIR.glob("*.json"):
+        category_name = json_file.stem  # filename without extension
+        
+        try:
+            with json_file.open() as fp:
+                category_data = json.load(fp)
+            
+            # Create category entry
+            category = {
+                "id": category_name,
+                "name": category_data.get("name", category_name.replace("_", " ").title())
+            }
+            categories.append(category)
+            
+            # Add objects from this category
+            objects = category_data.get("objects", [])
+            for obj in objects:
+                obj["category_id"] = category_name  # Ensure category_id matches
+                all_objects.append(obj)
+                
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"Warning: Could not load {json_file}: {e}")
+            continue
+    
     return {
-        "categories": data.get("categories", []),
-        "objects":    data.get("objects",   [])
+        "categories": sorted(categories, key=lambda c: c["name"].lower()),
+        "objects": all_objects
     }
 
 # Index objects by category_id for quick lookup

@@ -149,10 +149,20 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 
-# Data files (if you want to exclude them)
-data/
-*.json
+# Data files - exclude user data but keep category examples
+data/worlddex_*.json
+data/pokedex_*.json
+
+# Keep category files and examples (these are procedurally generated)
+# Uncomment the line below if you want to exclude category files too:
+# data/*.json
+
+# Other data files
 *.csv
+
+# Keep example files
+!worlddex_example.json
+!*_example.json
 
 # Logs
 logs/

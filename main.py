@@ -30,7 +30,12 @@ os.makedirs(DATA_DIR, exist_ok=True)
 # ─── UTILS ─────────────────────────────────────────────────────────────────
 def db_for(user_id: str) -> TinyDB:
     """Return (and auto-create) TinyDB file for this user."""
-    return TinyDB(os.path.join(DATA_DIR, f"pokedex_{user_id}.json"),
+    return TinyDB(os.path.join(DATA_DIR, f"worlddex_{user_id}.json"),
+                  indent=2, ensure_ascii=False)
+
+def get_category_db(category_name: str) -> TinyDB:
+    """Return TinyDB for a specific category."""
+    return TinyDB(os.path.join(DATA_DIR, f"{category_name}.json"),
                   indent=2, ensure_ascii=False)
 
 def cosine(a: List[float], b: List[float]) -> float:
