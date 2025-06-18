@@ -233,6 +233,10 @@ def main() -> None:
     entries.append(new_entry)
     _save(file_path, entries)
     _update_quest_and_stats(obj_name, category)
+    
+    # Create refresh signal for display
+    signal_file = _DATA_DIR / ".refresh_signal"
+    signal_file.touch()
 
     rel = file_path.relative_to(_DATA_DIR.parent)
     print(f"✔ Added '{obj_name}' to {rel}")

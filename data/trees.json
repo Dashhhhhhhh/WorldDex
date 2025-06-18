@@ -1,32 +1,17 @@
 [
   {
-    "name": "giant sequoia",
-    "description": "Towering like a living skyscraper, the giant sequoia has thick, cinnamon-red bark that feels spongy to the touch, with massive, upward-sweeping branches that seem to cradle the sky. Its sheer size—often wider than a two-lane road—makes it impossible to miss in the wild.",
-    "added": "2025-06-17T21:00:42"
-  },
-  {
-    "name": "redwood",
-    "description": "Towering like nature's skyscrapers, these ancient giants have cinnamon-red, deeply furrowed bark and feathery evergreen crowns that vanish into the coastal fog. Spot them by their sheer size—some wider than a car—and their spongy, fire-resistant bark you could press your hand into.",
-    "added": "2025-06-17T21:01:11"
-  },
-  {
-    "name": "oak tree",
-    "description": "Towering and broad, the oak tree has deeply lobed leaves and rugged, furrowed bark, often hosting acorns beneath its wide, gnarled branches. Its sturdy presence and distinctive silhouette make it a landmark in woodlands and open fields alike.",
-    "added": "2025-06-18T19:41:52"
-  },
-  {
-    "name": "Test Oak Tree",
-    "description": "Look for a towering, rugged tree with deeply grooved bark and broad, lobed leaves that turn golden in autumn—its sturdy branches often cradle acorns, a favorite of woodland creatures.",
-    "added": "2025-06-18T19:50:02"
+    "name": "Apple Tree",
+    "description": "Look for a small to medium-sized tree with gnarled branches, glossy green leaves, and clusters of pink or white blossoms in spring—later bearing round, crisp fruits in shades of red, green, or yellow. The bark is often rough and flaky, and you might spot fallen apples or their sweet scent on the ground in autumn.",
+    "added": "2025-06-18T22:08:47"
   },
   {
     "name": "Maple Tree",
-    "description": "Look for broad, hand-shaped leaves with pointed lobes that turn fiery red or gold in autumn—the maple stands out with its distinctive winged seeds spiraling down like tiny helicopters.",
-    "added": "2025-06-18T20:15:13"
+    "description": "Look for broad, lobed leaves with pointed tips that turn fiery red or gold in autumn, and check for winged \"helicopter\" seeds twirling to the ground in summer. Its smooth gray bark darkens and cracks with age.",
+    "added": "2025-06-18T22:11:21"
   },
   {
-    "name": "Birch Tree",
-    "description": "Look for the slender, white-barked trunk peeling in papery strips, with delicate, triangular leaves that flutter in the breeze like tiny green flags. In autumn, its golden leaves stand out against the forest like scattered sunlight.",
-    "added": "2025-06-18T20:15:31"
+    "name": "Pine Tree",
+    "description": "Tall and straight with rough, scaly bark, its long needles grow in clusters and release a sharp, resinous scent when crushed—spot its distinctive cones scattered below.",
+    "added": "2025-06-18T22:13:30"
   }
 ]

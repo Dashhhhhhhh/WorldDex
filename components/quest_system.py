@@ -143,8 +143,7 @@ class QuestSystem:
             
         category = random.choice(categories)
         cat_objects = [obj for obj in objects if obj.get("category_id") == category["id"]]
-        
-        # Vary the target count based on category size
+          # Vary the target count based on category size
         max_target = min(len(cat_objects), 5)
         target_count = random.randint(1, max(1, max_target))
         
@@ -152,8 +151,8 @@ class QuestSystem:
         
         return Quest(
             id=quest_id,
-            title=f"Explore {category['name']}",
-            description=f"Discover {target_count} different {category['name'].lower()} in your area",
+            title=f"Nature Survey: {category['name']}",
+            description=f"During your field exploration, identify and document {target_count} different {category['name'].lower()} species",
             type="discovery",
             target_category=category["id"],
             target_count=target_count,
@@ -270,19 +269,20 @@ class QuestSystem:
             print("[Quest] LLM client not available, falling back to template quest")
             return self.generate_fallback_quest(categories, objects)
         
-        try:
-            # Get context about available categories and objects
+        try:            # Get context about available categories and objects
             category_names = [cat["name"] for cat in categories]
             object_samples = [obj["name"] for obj in objects[:10]]  # First 10 objects as examples
             
-            system_prompt = """You are a quest generator for World-Dex, a nature discovery app. 
-Generate engaging quests that encourage users to explore and discover objects in the natural world.
+            system_prompt = """You are a quest generator for World-Dex, a field naturalist's digital companion.
+The user is actively exploring natural environments - forests, meadows, parks, trails, backyards, and wilderness areas. 
+
+Generate engaging nature exploration quests that encourage field discovery of real plants, animals, trees, minerals, fungi, and other natural objects.
 
 Quest types available:
-- Discovery: Find X items in a category
-- Collection: Collect all items from a category  
-- Explorer: Discover items across multiple categories
-- Knowledge: Learn about specific objects
+- Discovery: Find X items in a specific category while exploring
+- Collection: Document all varieties within a category in your area
+- Explorer: Discover items across multiple natural categories during field work
+- Knowledge: Study and identify specific natural specimens
 
 Respond with a JSON object containing:
 {
@@ -295,12 +295,12 @@ Respond with a JSON object containing:
   "reward_points": number
 }
 
-Make quests fun, educational, and achievable. Points should be 5-20 based on difficulty."""
+Make quests realistic for field naturalists: encourage observation, identification, and documentation of flora, fauna, geology, and ecosystems. Points should be 5-20 based on difficulty and rarity."""
 
-            user_prompt = f"""Generate a quest based on these available categories: {', '.join(category_names)}
-Example objects in the catalog: {', '.join(object_samples)}
+            user_prompt = f"""The user is exploring nature with their World-Dex field guide. Available categories in their catalog: {', '.join(category_names)}
+Current specimens they've documented: {', '.join(object_samples)}
 
-Create an engaging quest that will motivate users to explore nature and discover new objects."""
+Generate an engaging field naturalist quest that encourages them to discover new species, varieties, or natural phenomena during their outdoor explorations. Consider seasonal availability, habitat diversity, and the joy of natural discovery."""
 
             response = self.client.chat.completions.create(
                 model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
@@ -312,7 +312,10 @@ Create an engaging quest that will motivate users to explore nature and discover
                 temperature=0.7
             )
             
-            quest_data = json.loads(response.choices[0].message.content.strip())
+            response_content = response.choices[0].message.content.strip()
+            print(f"[Quest] LLM Response: {response_content[:100]}...")  # Debug logging
+            
+            quest_data = json.loads(response_content)
             
             # Create quest object
             quest_id = f"llm_{quest_data['type']}_{int(time.time())}"
@@ -338,8 +341,7 @@ Create an engaging quest that will motivate users to explore nature and discover
         """Generate a fallback quest when LLM is not available"""
         if not categories:
             return None
-            
-        # Simple fallback - always generate a discovery quest
+              # Simple fallback - always generate a discovery quest
         category = random.choice(categories)
         target_count = random.randint(1, 3)
         
@@ -347,11 +349,12 @@ Create an engaging quest that will motivate users to explore nature and discover
         
         return Quest(
             id=quest_id,
-            title=f"Discover {category['name']}",
-            description=f"Find {target_count} different {category['name'].lower()} in your area",
+            title=f"Field Study: {category['name']}",
+            description=f"While exploring nature, document {target_count} different {category['name'].lower()} species in your field area",
             type="discovery", 
             target_category=category["id"],
-            target_count=target_count,            reward_points=target_count * 5
+            target_count=target_count,
+            reward_points=target_count * 5
         )
     
     def _cleanup_duplicate_quests(self):

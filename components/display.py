@@ -139,7 +139,7 @@ def load_catalog() -> Dict:
                 all_objects.append(o)
 
         except (json.JSONDecodeError, OSError) as e:
-            print(f"[World-Dex] ⚠️  Skipping {json_file}: {e}")
+            print(f"[World-Dex] WARNING: Skipping {json_file}: {e}")
 
     categories.sort(key=lambda c: c["name"].lower())
     all_objects.sort(key=lambda o: o["name"].lower())
@@ -233,6 +233,7 @@ def get_key():
                 if event.key == pygame.K_DOWN:                  return "down"
                 if event.key in (pygame.K_RETURN, pygame.K_SPACE): return "ok"
                 if event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE): return "back"
+                if event.key == pygame.K_r:                     return "refresh"
     return None
 
 # ─── UI states ───────────────────────────────────────────────────────────
@@ -259,11 +260,10 @@ class WorldDexUI:
         self.quest_system = QuestSystem(DATA_DIR)
         self.stats_system = StatsSystem(DATA_DIR)
         self.current_quest = None    # Currently selected quest
-        self.quest_list_type = "active"  # "active" or "completed"
-        self.load_data()
-        self.last_refresh = time.time()          # Generate initial quests if none exist - quest system now auto-maintains 3 quests
+        self.quest_list_type = "active"  # "active" or "completed"        self.load_data()
+        # Generate initial quests if none exist - quest system now auto-maintains 3 quests
         # No manual generation needed as the QuestSystem automatically maintains exactly 3 active quests
-
+    
     def load_data(self):
         data = load_catalog()
         self.cat = data["categories"]
@@ -273,9 +273,9 @@ class WorldDexUI:
     def get_main_menu_items(self):
         """Get main menu options"""
         return [
-            {"id": "catalog", "name": "📚 Catalog"},
-            {"id": "quests", "name": "⚔️ Quests"},
-            {"id": "stats", "name": "📊 Stats"}
+            {"id": "catalog", "name": "Catalog"},
+            {"id": "quests", "name": "Quests"},
+            {"id": "stats", "name": "Stats"}
         ]
     
     def get_quest_menu_items(self):
@@ -325,19 +325,20 @@ class WorldDexUI:
         elif self.sel_idx >= self.scroll_offset + max_visible:
             # Selected item is below visible area, scroll down
             self.scroll_offset = self.sel_idx - max_visible + 1
-        
-        # Clamp scroll offset to valid range
+          # Clamp scroll offset to valid range
         self.scroll_offset = max(0, min(self.scroll_offset, list_length - max_visible))
     
     def get_visible_items(self, items_list):
         """Get the subset of items that should be visible on screen"""
         if not items_list:
-            return []
+            return [], 0
         
         max_visible = self.get_max_visible_items()
         start_idx = self.scroll_offset
         end_idx = min(start_idx + max_visible, len(items_list))
-        return items_list[start_idx:end_idx], start_idx# ── Rendering helpers ────────────────────────────────────────────
+        return items_list[start_idx:end_idx], start_idx
+
+    # ── Rendering helpers ────────────────────────────────────────────
     def draw_card(self, draw, x, y, width, height, color=None):
         """Draw a modern card with subtle shadow"""
         if color is None:
@@ -458,6 +459,10 @@ class WorldDexUI:
         draw.text((text_x, text_y), position_text, fill=COLORS['text_dim'], font=FONT)
 
     def render(self):
+        # Check for refresh signal from main.py before rendering
+        if self._check_refresh_signal():
+            self.load_data()
+            
         with canvas() as draw:
             # Modern dark background
             draw.rectangle((0, 0, WIDTH, HEIGHT), fill=COLORS['bg'])
@@ -467,9 +472,7 @@ class WorldDexUI:
                 
                 menu_items = self.get_main_menu_items()
                 for i, item in enumerate(menu_items):
-                    icon = item["name"].split()[0]  # Extract emoji
-                    text = " ".join(item["name"].split()[1:])  # Rest of text
-                    y = self.draw_list_item(draw, BORDER, y, text, i == self.sel_idx, icon)
+                    y = self.draw_list_item(draw, BORDER, y, item["name"], i == self.sel_idx, None)
 
             elif self.state == STATE_CAT:
                 y = self.draw_header(draw, "Categories", f"{len(self.cat)} categories")
@@ -483,8 +486,9 @@ class WorldDexUI:
                     count = len(self.objs_by_cat.get(cat["id"], []))
                     secondary = f"{count} items" if count != 1 else "1 item"
                     y = self.draw_list_item(draw, BORDER, y, cat["name"], actual_idx == self.sel_idx, 
-                                          "📁", secondary)
-                  # Draw scroll indicator if needed
+                                          None, secondary)
+                
+                # Draw scroll indicator if needed
                 if len(self.cat) > self.get_max_visible_items():
                     self.draw_scroll_indicator(draw, len(self.cat), len(visible_cats), start_idx)
 
@@ -499,7 +503,7 @@ class WorldDexUI:
                 
                 for i, obj in enumerate(visible_objs):
                     actual_idx = start_idx + i
-                    y = self.draw_list_item(draw, BORDER, y, obj["name"], actual_idx == self.sel_idx, "🔍")
+                    y = self.draw_list_item(draw, BORDER, y, obj["name"], actual_idx == self.sel_idx, None)
                 
                 # Draw scroll indicator if needed
                 if len(objs) > self.get_max_visible_items():
@@ -536,9 +540,7 @@ class WorldDexUI:
                 y = self.draw_header(draw, "Quests", f"{stats['total_points']} points earned")
                 
                 for i, item in enumerate(quest_menu_items):
-                    icon = "⚔️" if "Active" in item["name"] else "✅" if "Completed" in item["name"] else "🔄"
-                    text = item["name"]
-                    y = self.draw_list_item(draw, BORDER, y, text, i == self.sel_idx, icon)
+                    y = self.draw_list_item(draw, BORDER, y, item["name"], i == self.sel_idx, None)
 
             elif self.state == STATE_QUEST_LIST:
                 quest_list = self.get_current_quest_list()
@@ -551,10 +553,9 @@ class WorldDexUI:
                 
                 for i, quest in enumerate(visible_quests):
                     actual_idx = start_idx + i
-                    icon = "✓" if quest.completed else "⚔️"
                     progress_text = f"{quest.progress}/{quest.target_count}"
                     y = self.draw_list_item(draw, BORDER, y, quest.title, actual_idx == self.sel_idx, 
-                                          icon, progress_text)
+                                          None, progress_text)
                 
                 # Draw scroll indicator if needed
                 if len(quest_list) > self.get_max_visible_items():
@@ -652,7 +653,7 @@ class WorldDexUI:
                 y += LINE_H * 2
                 
                 for i, quest in enumerate(quest_list):
-                    status = "✓" if quest.completed else f"{quest.progress}/{quest.target_count}"
+                    status = "DONE" if quest.completed else f"{quest.progress}/{quest.target_count}"
                     quest_text = f"{quest.title} [{status}]"
                     self.write_line(draw, y, quest_text, i == self.sel_idx)
                     y += LINE_H
@@ -679,7 +680,7 @@ class WorldDexUI:
                     y += LINE_H
                     progress_text = f"Progress: {quest.progress}/{quest.target_count}"
                     if quest.completed:
-                        progress_text += " ✓"
+                        progress_text += " DONE"
                     self.write_line(draw, y, progress_text)
                       # Show reward
                     y += LINE_H
@@ -689,7 +690,7 @@ class WorldDexUI:
                 # Display user statistics
                 stats = self.stats_system.stats
                 
-                self.write_line(draw, y, "📊 Your Statistics", True)
+                self.write_line(draw, y, "Your Statistics", True)
                 y += LINE_H * 2
                 
                 # Basic stats
@@ -739,7 +740,9 @@ class WorldDexUI:
                     self.write_line(draw, y, ln)
                     y += LINE_H
 
-    # ── Helpers ─────────────────────────────────────────────────────    def get_current_obj(self):
+    # ── Helpers ─────────────────────────────────────────────────────
+    
+    def get_current_obj(self):
         """Get the currently selected object in the active category"""
         if self.active_cat_id is None:
             return None
@@ -856,6 +859,17 @@ class WorldDexUI:
             return []  # Stats screen doesn't have a list
         return []
 
+    def _check_refresh_signal(self):
+        """Check if main.py has created a refresh signal"""
+        signal_file = DATA_DIR / ".refresh_signal"
+        if signal_file.exists():
+            try:
+                signal_file.unlink()  # Remove the signal file
+                return True
+            except OSError:
+                pass  # File might be in use, try again next time
+        return False
+
 # ─── Main loop ───────────────────────────────────────────────────────────
 def main():
     ui = WorldDexUI()
@@ -863,12 +877,6 @@ def main():
         ui.render()
         key = get_key()
         ui.handle_key(key)
-
-        # auto-refresh catalog every 30 s
-        if time.time() - ui.last_refresh > 30:
-            ui.load_data()
-            ui.last_refresh = time.time()
-
         time.sleep(0.05)
 
 if __name__ == "__main__":
