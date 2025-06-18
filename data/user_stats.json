@@ -1,0 +1,44 @@
+{
+  "objects_discovered": 10,
+  "categories_explored": [
+    "trees",
+    "minerals",
+    "mammals"
+  ],
+  "total_quest_points": 40,
+  "quests_completed": 4,
+  "first_discovery_date": "2025-06-18T15:50:02.710059",
+  "last_activity_date": "2025-06-18T17:01:06.510954",
+  "discovery_streak": 1,
+  "achievements": [
+    "discover_1",
+    "quest_1",
+    "multi_category",
+    "discover_5",
+    "discover_10"
+  ],
+  "category_progress": {
+    "trees": {
+      "discovered": [
+        "Test Oak Tree",
+        "Maple Tree",
+        "Birch Tree",
+        "oak tree"
+      ],
+      "first_discovery": "2025-06-18T15:50:02.710059"
+    },
+    "minerals": {
+      "discovered": [
+        "Ruby Gemstone"
+      ],
+      "first_discovery": "2025-06-18T15:50:28.609933"
+    },
+    "mammals": {
+      "discovered": [
+        "Gray Wolf"
+      ],
+      "first_discovery": "2025-06-18T15:52:06.688928"
+    }
+  },
+  "last_discovery_date": "2025-06-18"
+}

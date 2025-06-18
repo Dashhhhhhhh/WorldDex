@@ -140,6 +140,43 @@ def _save(path: _pl.Path, data: list) -> None:
     with path.open("w", encoding="utf-8") as f:
         _json.dump(data, f, indent=2, ensure_ascii=False)
 
+# ─────────────────────────── Quest & Stats Integration ───────────────────────────
+
+def _update_quest_and_stats(obj_name: str, category: str) -> None:
+    """Update quest progress and stats when a new object is discovered."""
+    try:
+        # Import the quest and stats systems
+        components_dir = _DATA_DIR.parent / "components"
+        _sys.path.insert(0, str(components_dir))
+        
+        from quest_system import QuestSystem
+        from stats import StatsSystem
+        
+        # Initialize systems
+        quest_system = QuestSystem(_DATA_DIR)
+        stats_system = StatsSystem(_DATA_DIR)
+        
+        # Record discovery in stats first
+        stats_system.record_discovery(obj_name, category)
+        
+        # Update quest progress and check for completions
+        completed_quest_ids = set(q.id for q in quest_system.get_completed_quests())
+        quest_system.update_quest_progress(obj_name, category)
+        
+        # Check if any new quests were completed
+        newly_completed = [q for q in quest_system.get_completed_quests() 
+                          if q.id not in completed_quest_ids and q.completed]
+        
+        for quest in newly_completed:
+            stats_system.record_quest_completion(quest.reward_points)
+            print(f"🎯 Completed quest: {quest.title} (+{quest.reward_points} points)")
+        
+        print(f"📊 Updated quest progress and stats for '{obj_name}' in category '{category}'")
+        
+    except Exception as e:
+        # Don't fail the main operation if quest/stats update fails
+        print(f"⚠️  Could not update quest/stats progress: {e}")
+
 # ────────────────────────────── Legacy migration ────────────────────────────────
 
 def _upgrade_entries(entries: list) -> _Tuple[list, bool]:
@@ -195,6 +232,7 @@ def main() -> None:
     }
     entries.append(new_entry)
     _save(file_path, entries)
+    _update_quest_and_stats(obj_name, category)
 
     rel = file_path.relative_to(_DATA_DIR.parent)
     print(f"✔ Added '{obj_name}' to {rel}")

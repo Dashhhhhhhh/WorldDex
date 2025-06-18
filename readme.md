@@ -1,6 +1,6 @@
-to start
+to start (on desktop)
 
 pip install -r requirements.txt
 
-python led_display.py
+python display.py
 
