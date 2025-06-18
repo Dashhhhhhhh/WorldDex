@@ -38,8 +38,20 @@ from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
 
 # ─── Config / env ─────────────────────────────────────────────────────────
+from dotenv import load_dotenv
 load_dotenv()
-DATA_DIR = Path(os.getenv("DATA_DIR", "../data"))  # Go up one level to find data directory
+
+# Smart data directory resolution
+import os
+current_dir = os.getcwd()
+env_data_dir = os.getenv("DATA_DIR", "./data")
+
+# If we're in components directory and env says "./data", adjust to "../data"
+if current_dir.endswith("components") and env_data_dir == "./data":
+    DATA_DIR = Path("../data")
+else:
+    DATA_DIR = Path(env_data_dir)
+
 USE_EMU  = os.getenv("USE_EMULATOR") == "1" or platform.system() in {"Windows", "Darwin"}
 
 WIDTH, HEIGHT = 240, 240
@@ -55,13 +67,11 @@ def load_catalog() -> Dict:
         {
           "categories": [ {id, name}, … ],
           "objects":    [ {name, facts, category_id, …}, … ]
-        }
+        }    • Supports the **TinyDB** schema produced by main.py:
+        {"objects": {"1": {...}, "2": {...}}}
 
-    • Supports the **TinyDB** schema produced by main.py:
-        {"objects": {"1": {...}, "2": {...}}}    • Also supports the original flat list schema:
-        {"objects": [{...}, {...}]}
-
-    • Also supports direct list format:
+    • Also supports the original flat list schema:
+        {"objects": [{...}, {...}]}    • Also supports direct list format:
         [{...}, {...}]
     """
     categories, all_objects = [], []
@@ -69,13 +79,20 @@ def load_catalog() -> Dict:
     if not DATA_DIR.exists():
         return {"categories": [], "objects": []}
 
+    # Exclude quest and stats files from catalog loading
+    excluded_files = {"quests.json", "quest_progress.json", "user_stats.json"}
+    
     for json_file in DATA_DIR.glob("*.json"):
+        if json_file.name in excluded_files:
+            continue
         cat_id   = json_file.stem                    # e.g. "trees"
         cat_name = cat_id.replace("_", " ").title()  # "Trees"
 
         try:
             with json_file.open() as fp:
-                raw = json.load(fp)            # Handle different data formats:
+                raw = json.load(fp)
+
+            # Handle different data formats:
             # TinyDB table            → dict with objects property: {"objects": {"1": {...}, "2": {...}}}
             # Hand-made / legacy file → dict with objects list: {"objects": [{...}, {...}]}
             # Direct list file        → list directly: [{...}, {...}]
@@ -199,24 +216,78 @@ def get_key():
     return None
 
 # ─── UI states ───────────────────────────────────────────────────────────
-STATE_CAT, STATE_OBJ, STATE_DESC = range(3)
+STATE_MAIN_MENU, STATE_CAT, STATE_OBJ, STATE_DESC, STATE_QUEST_MENU, STATE_QUEST_LIST, STATE_QUEST_DETAIL, STATE_STATS = range(8)
+
+# Import quest system and stats
+try:
+    from .quest_system import QuestSystem
+    from .stats import StatsSystem
+except ImportError:
+    # Running as script, use absolute import
+    from quest_system import QuestSystem
+    from stats import StatsSystem
 
 class WorldDexUI:
     def __init__(self):
-        self.state = STATE_CAT
+        self.state = STATE_MAIN_MENU  # Start with main menu
         self.sel_idx = 0             # highlighted index in current list
         self.cat:  List[Dict] = []
         self.obj:  List[Dict] = []
         self.objs_by_cat = {}
         self.active_cat_id: str | None = None
+        self.quest_system = QuestSystem(DATA_DIR)
+        self.stats_system = StatsSystem(DATA_DIR)
+        self.current_quest = None    # Currently selected quest
+        self.quest_list_type = "active"  # "active" or "completed"
         self.load_data()
         self.last_refresh = time.time()
+        
+        # Generate initial quests if none exist
+        if not self.quest_system.get_active_quests():
+            self.generate_daily_quests()
 
     def load_data(self):
         data = load_catalog()
         self.cat = data["categories"]
         self.obj = data["objects"]
         self.objs_by_cat = build_lookup(self.cat, self.obj)
+
+    def generate_daily_quests(self):
+        """Generate new daily quests"""
+        new_quests = self.quest_system.generate_daily_quests(self.cat, self.obj)
+        if new_quests:
+            self.quest_system.add_quests(new_quests)
+
+    def get_main_menu_items(self):
+        """Get main menu options"""
+        return [
+            {"id": "catalog", "name": "📚 Catalog"},
+            {"id": "quests", "name": "⚔️ Quests"},
+            {"id": "stats", "name": "📊 Stats"}
+        ]
+
+    def get_quest_menu_items(self):
+        """Get quest menu options"""
+        active_quests = self.quest_system.get_active_quests()
+        completed_quests = self.quest_system.get_completed_quests()
+        
+        items = []
+        items.append({"id": "active", "name": f"Active ({len(active_quests)})"})
+        items.append({"id": "completed", "name": f"Completed ({len(completed_quests)})"})
+        items.append({"id": "generate", "name": "🔄 New Quests"})
+        return items
+
+    def get_current_quest_list(self):
+        """Get the current list of quests to display"""
+        menu_items = self.get_quest_menu_items()
+        
+        if self.sel_idx < len(menu_items):
+            selected_item = menu_items[self.sel_idx]
+            if selected_item["id"] == "active":
+                return self.quest_system.get_active_quests()
+            elif selected_item["id"] == "completed":
+                return self.quest_system.get_completed_quests()
+        return []
 
     # ── Rendering helpers ────────────────────────────────────────────
     def write_line(self, draw, y, txt, highlight=False):
@@ -229,7 +300,13 @@ class WorldDexUI:
             draw.text((BORDER, 2), "World-Dex", fill=(255, 0, 0), font=FONT)
             y = BORDER + LINE_H
 
-            if self.state == STATE_CAT:
+            if self.state == STATE_MAIN_MENU:
+                menu_items = self.get_main_menu_items()
+                for i, item in enumerate(menu_items):
+                    self.write_line(draw, y, item["name"], i == self.sel_idx)
+                    y += LINE_H
+
+            elif self.state == STATE_CAT:
                 for i, cat in enumerate(self.cat):
                     self.write_line(draw, y, cat["name"], i == self.sel_idx)
                     y += LINE_H
@@ -240,7 +317,113 @@ class WorldDexUI:
                     self.write_line(draw, y, o["name"], i == self.sel_idx)
                     y += LINE_H
 
-            else:  # DESCRIPTION
+            elif self.state == STATE_DESC:
+                obj = self.get_current_obj()
+                if obj:
+                    # Try different field names for the description/facts
+                    description = obj.get("description") or obj.get("facts") or "(no description available)"
+                    if isinstance(description, list):
+                        # If facts is a list, join the first few items
+                        description = "\n".join(description[:3])
+                    wrapper = textwrap.TextWrapper(width=30)
+                    lines = wrapper.wrap(f"{obj['name']}: {description}")
+                else:
+                    lines = ["(no data)"]
+                
+                for ln in lines:
+                    if y > HEIGHT - LINE_H:
+                        break
+                    self.write_line(draw, y, ln)
+                    y += LINE_H
+
+            elif self.state == STATE_QUEST_MENU:
+                quest_menu_items = self.get_quest_menu_items()
+                for i, item in enumerate(quest_menu_items):
+                    self.write_line(draw, y, item["name"], i == self.sel_idx)
+                    y += LINE_H
+                
+                # Show user stats at the bottom
+                stats = self.quest_system.get_user_stats()
+                stats_y = HEIGHT - LINE_H * 2
+                self.write_line(draw, stats_y, f"Points: {stats['total_points']}")
+
+            elif self.state == STATE_QUEST_LIST:
+                # Show list of quests (active or completed)
+                quest_list = self.get_current_quest_list()
+                title = f"{self.quest_list_type.title()} Quests ({len(quest_list)})"
+                self.write_line(draw, y, title, True)
+                y += LINE_H * 2
+                
+                for i, quest in enumerate(quest_list):
+                    status = "✓" if quest.completed else f"{quest.progress}/{quest.target_count}"
+                    quest_text = f"{quest.title} [{status}]"
+                    self.write_line(draw, y, quest_text, i == self.sel_idx)
+                    y += LINE_H
+                    if y > HEIGHT - LINE_H:
+                        break
+
+            elif self.state == STATE_QUEST_DETAIL:
+                if self.current_quest:
+                    quest = self.current_quest
+                    # Show quest title
+                    self.write_line(draw, y, quest.title, True)
+                    y += LINE_H * 2
+                    
+                    # Show quest description (wrapped)
+                    wrapper = textwrap.TextWrapper(width=28)
+                    desc_lines = wrapper.wrap(quest.description)
+                    for line in desc_lines:
+                        if y > HEIGHT - LINE_H * 3:
+                            break
+                        self.write_line(draw, y, line)
+                        y += LINE_H
+                    
+                    # Show progress
+                    y += LINE_H
+                    progress_text = f"Progress: {quest.progress}/{quest.target_count}"
+                    if quest.completed:
+                        progress_text += " ✓"
+                    self.write_line(draw, y, progress_text)
+                      # Show reward
+                    y += LINE_H
+                    self.write_line(draw, y, f"Reward: {quest.reward_points} pts")
+
+            elif self.state == STATE_STATS:
+                # Display user statistics
+                stats = self.stats_system.stats
+                
+                self.write_line(draw, y, "📊 Your Statistics", True)
+                y += LINE_H * 2
+                
+                # Basic stats
+                self.write_line(draw, y, f"Objects Found: {stats['objects_discovered']}")
+                y += LINE_H
+                
+                self.write_line(draw, y, f"Categories: {len(stats['categories_explored'])}")
+                y += LINE_H
+                
+                self.write_line(draw, y, f"Quests Done: {stats['quests_completed']}")
+                y += LINE_H
+                
+                self.write_line(draw, y, f"Quest Points: {stats['total_quest_points']}")
+                y += LINE_H
+                
+                self.write_line(draw, y, f"Discovery Streak: {stats['discovery_streak']}")
+                y += LINE_H * 2
+                
+                # Recent achievements
+                if stats['achievements']:
+                    self.write_line(draw, y, "Recent Achievements:")
+                    y += LINE_H
+                    # Show last 2 achievements if any
+                    recent_achievements = stats['achievements'][-2:]
+                    for achievement_id in recent_achievements:
+                        # Format achievement name
+                        name = achievement_id.replace('_', ' ').title()
+                        self.write_line(draw, y, f"• {name}")
+                        y += LINE_H
+                        if y > HEIGHT - LINE_H:
+                            break
                 obj = self.get_current_obj()
                 if obj:
                     # Try different field names for the description/facts
@@ -266,9 +449,7 @@ class WorldDexUI:
         objs = self.objs_by_cat.get(self.active_cat_id, [])
         if not objs:
             return None
-        return objs[self.sel_idx]
-
-    # ── Input handling ───────────────────────────────────────────────
+        return objs[self.sel_idx]    # ── Input handling ───────────────────────────────────────────────
     def handle_key(self, key):
         if key is None:
             return
@@ -280,27 +461,83 @@ class WorldDexUI:
             self.sel_idx = (self.sel_idx + (-1 if key == "up" else 1)) % (max_idx + 1)
 
         elif key == "ok":
-            if self.state == STATE_CAT and self.cat and self.sel_idx < len(self.cat):
+            if self.state == STATE_MAIN_MENU:
+                menu_items = self.get_main_menu_items()
+                if self.sel_idx < len(menu_items):
+                    selected = menu_items[self.sel_idx]
+                    if selected["id"] == "catalog":
+                        self.state = STATE_CAT
+                        self.sel_idx = 0
+                    elif selected["id"] == "quests":
+                        self.state = STATE_QUEST_MENU
+                        self.sel_idx = 0
+                    elif selected["id"] == "stats":
+                        # Show stats screen
+                        self.state = STATE_STATS
+                        self.sel_idx = 0
+
+            elif self.state == STATE_CAT and self.cat and self.sel_idx < len(self.cat):
                 self.active_cat_id = self.cat[self.sel_idx]["id"]
                 self.sel_idx = 0
                 self.state = STATE_OBJ
+
             elif self.state == STATE_OBJ:
+                # Update quest progress when viewing an object
+                objs = self.objs_by_cat.get(self.active_cat_id, [])
+                if self.sel_idx < len(objs):
+                    obj = objs[self.sel_idx]
+                    self.quest_system.update_quest_progress(obj["name"], self.active_cat_id)                    # Record discovery for stats
+                    self.stats_system.record_discovery(obj["name"], self.active_cat_id)
                 self.state = STATE_DESC
+
+            elif self.state == STATE_QUEST_MENU:
+                quest_menu_items = self.get_quest_menu_items()
+                if self.sel_idx < len(quest_menu_items):
+                    selected = quest_menu_items[self.sel_idx]
+                    if selected["id"] == "generate":
+                        self.generate_daily_quests()
+                    elif selected["id"] in ["active", "completed"]:
+                        quests = self.get_current_quest_list()
+                        if quests:
+                            self.current_quest = quests[0]
+                            self.state = STATE_QUEST_DETAIL
+                            self.sel_idx = 0
 
         elif key == "back":
             if self.state == STATE_DESC:
                 self.state = STATE_OBJ
             elif self.state == STATE_OBJ:
                 self.state = STATE_CAT
+            elif self.state == STATE_CAT:
+                self.state = STATE_MAIN_MENU
+                self.sel_idx = 0
+            elif self.state == STATE_QUEST_DETAIL:
+                self.state = STATE_QUEST_MENU
+                self.current_quest = None
+                self.sel_idx = 0
+            elif self.state == STATE_QUEST_MENU:
+                self.state = STATE_MAIN_MENU
+                self.sel_idx = 0
+            elif self.state == STATE_STATS:
+                self.state = STATE_MAIN_MENU
+                self.sel_idx = 0
 
         elif key == "refresh":
             self.load_data()
 
     def current_list(self):
-        if self.state == STATE_CAT:
+        if self.state == STATE_MAIN_MENU:
+            return self.get_main_menu_items()
+        elif self.state == STATE_CAT:
             return self.cat
-        if self.state == STATE_OBJ:
+        elif self.state == STATE_OBJ:
             return self.objs_by_cat.get(self.active_cat_id, [])
+        elif self.state == STATE_QUEST_MENU:
+            return self.get_quest_menu_items()
+        elif self.state == STATE_QUEST_DETAIL:
+            return self.get_current_quest_list()
+        elif self.state == STATE_STATS:
+            return []  # Stats screen doesn't have a list
         return []
 
 # ─── Main loop ───────────────────────────────────────────────────────────

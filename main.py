@@ -202,6 +202,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     try:
-        main()
+       main()
     except KeyboardInterrupt:
         print("\nOperation cancelled by user.")

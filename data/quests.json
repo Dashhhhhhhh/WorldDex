@@ -1,0 +1,44 @@
+[
+  {
+    "id": "discovery_trees_1750274649",
+    "title": "Explore Trees",
+    "description": "Discover 1 different trees in your area",
+    "type": "discovery",
+    "target_category": "trees",
+    "target_count": 1,
+    "target_items": [],
+    "progress": 0,
+    "completed": false,
+    "created_at": "2025-06-18T15:24:09.122649",
+    "completed_at": null,
+    "reward_points": 5
+  },
+  {
+    "id": "discovery_trees_1750274649",
+    "title": "Explore Trees",
+    "description": "Discover 2 different trees in your area",
+    "type": "discovery",
+    "target_category": "trees",
+    "target_count": 2,
+    "target_items": [],
+    "progress": 0,
+    "completed": false,
+    "created_at": "2025-06-18T15:24:09.122649",
+    "completed_at": null,
+    "reward_points": 10
+  },
+  {
+    "id": "discovery_trees_1750274649",
+    "title": "Explore Trees",
+    "description": "Discover 2 different trees in your area",
+    "type": "discovery",
+    "target_category": "trees",
+    "target_count": 2,
+    "target_items": [],
+    "progress": 0,
+    "completed": false,
+    "created_at": "2025-06-18T15:24:09.122649",
+    "completed_at": null,
+    "reward_points": 10
+  }
+]
