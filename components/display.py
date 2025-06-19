@@ -30,7 +30,7 @@ World-Dex handheld UI for a 240 × 240 ST7789 IPS display
 """
 
 from __future__ import annotations
-import os, sys, time, json, textwrap, contextlib, platform
+import os, sys, time, json, textwrap, contextlib, platform, threading
 from pathlib import Path
 from typing import List, Dict
 
@@ -260,7 +260,13 @@ class WorldDexUI:
         self.quest_system = QuestSystem(DATA_DIR)
         self.stats_system = StatsSystem(DATA_DIR)
         self.current_quest = None    # Currently selected quest
-        self.quest_list_type = "active"  # "active" or "completed"        self.load_data()
+        self.quest_list_type = "active"  # "active" or "completed"
+        
+        # Threading support for non-blocking data loading
+        self._loading = False
+        self._loading_lock = threading.Lock()
+        
+        self.load_data()
         # Generate initial quests if none exist - quest system now auto-maintains 3 quests
         # No manual generation needed as the QuestSystem automatically maintains exactly 3 active quests
     
@@ -461,11 +467,21 @@ class WorldDexUI:
     def render(self):
         # Check for refresh signal from main.py before rendering
         if self._check_refresh_signal():
-            self.load_data()
+            self.load_data_async()  # Use async loading to avoid blocking GUI
             
         with canvas() as draw:
             # Modern dark background
             draw.rectangle((0, 0, WIDTH, HEIGHT), fill=COLORS['bg'])
+            
+            # Show loading indicator if data is being refreshed
+            with self._loading_lock:
+                is_loading = self._loading
+            if is_loading:
+                loading_text = "Refreshing data..."
+                text_width = FONT.getbbox(loading_text)[2]
+                text_x = WIDTH - BORDER - text_width
+                text_y = HEIGHT - BORDER - LINE_H
+                draw.text((text_x, text_y), loading_text, fill=COLORS['primary'], font=FONT)
             
             if self.state == STATE_MAIN_MENU:
                 y = self.draw_header(draw, "WorldDex", "Your field companion")
@@ -616,23 +632,7 @@ class WorldDexUI:
                     draw.text((x + MARGIN, card_y + MARGIN), value, fill=color, font=value_font)
                     
                     # Label (small)
-                    draw.text((x + MARGIN, card_y + MARGIN + 26), label, 
-                             fill=COLORS['text_dim'], font=FONT)
-                
-                # Achievements section
-                if stats['achievements']:
-                    achieve_y = y + card_height * 2 + MARGIN * 3
-                    draw.text((BORDER, achieve_y), "Recent Achievements:", 
-                             fill=COLORS['text'], font=FONT)
-                    achieve_y += LINE_H + MARGIN
-                    
-                    x = BORDER
-                    for achievement_id in stats['achievements'][-3:]:  # Show last 3
-                        name = achievement_id.replace('_', ' ').title()
-                        x = self.draw_badge(draw, x, achieve_y, name, COLORS['success'])
-                        if x > WIDTH - 60:  # Wrap to next line if needed
-                            x = BORDER
-                            achieve_y += LINE_H + MARGIN
+                    draw.text((x + MARGIN, card_y + MARGIN + 26), label,                             fill=COLORS['text_dim'], font=FONT)
 
             elif self.state == STATE_QUEST_MENU:
                 quest_menu_items = self.get_quest_menu_items()
@@ -708,20 +708,6 @@ class WorldDexUI:
                 
                 self.write_line(draw, y, f"Discovery Streak: {stats['discovery_streak']}")
                 y += LINE_H * 2
-                
-                # Recent achievements
-                if stats['achievements']:
-                    self.write_line(draw, y, "Recent Achievements:")
-                    y += LINE_H
-                    # Show last 2 achievements if any
-                    recent_achievements = stats['achievements'][-2:]
-                    for achievement_id in recent_achievements:
-                        # Format achievement name
-                        name = achievement_id.replace('_', ' ').title()
-                        self.write_line(draw, y, f"• {name}")
-                        y += LINE_H
-                        if y > HEIGHT - LINE_H:
-                            break
                 obj = self.get_current_obj()
                 if obj:
                     # Try different field names for the description/facts
@@ -791,9 +777,8 @@ class WorldDexUI:
                 objs = self.objs_by_cat.get(self.active_cat_id, [])
                 if self.sel_idx < len(objs):
                     obj = objs[self.sel_idx]
-                    self.quest_system.update_quest_progress(obj["name"], self.active_cat_id)
-                    # Record discovery for stats
-                    self.stats_system.record_discovery(obj["name"], self.active_cat_id)
+                    # Update progress asynchronously to avoid GUI lag
+                    self.async_update_progress(obj["name"], self.active_cat_id)
                 self.state = STATE_DESC
             
             elif self.state == STATE_QUEST_MENU:
@@ -870,9 +855,61 @@ class WorldDexUI:
                 pass  # File might be in use, try again next time
         return False
 
+    def _background_load_data(self):
+        """Load data in background thread to avoid blocking GUI"""
+        try:
+            # Load catalog data
+            data = load_catalog()
+            
+            # Load quest and stats data
+            self.quest_system.load_quests()
+            self.quest_system.load_progress() 
+            self.stats_system.load_stats()
+            
+            # Update UI data atomically
+            with self._loading_lock:
+                self.cat = data["categories"]
+                self.obj = data["objects"]
+                self.objs_by_cat = build_lookup(self.cat, self.obj)
+                self._loading = False
+                
+        except Exception as e:
+            print(f"[WorldDex] Error loading data in background: {e}")
+            with self._loading_lock:
+                self._loading = False
+    
+    def load_data_async(self):
+        """Trigger background data loading if not already loading"""
+        with self._loading_lock:
+            if not self._loading:
+                self._loading = True
+                thread = threading.Thread(target=self._background_load_data, daemon=True)
+                thread.start()
+    
+    def async_update_progress(self, obj_name, category_id):
+        """Asynchronously update quest progress and stats to avoid GUI lag"""
+        def update_in_background():
+            try:
+                self.quest_system.update_quest_progress(obj_name, category_id)
+                self.stats_system.record_discovery(obj_name, category_id)
+            except Exception as e:
+                print(f"[Display] Error updating progress in background: {e}")
+        
+        # Start background thread for progress update
+        thread = threading.Thread(target=update_in_background, daemon=True)
+        thread.start()
+
 # ─── Main loop ───────────────────────────────────────────────────────────
 def main():
     ui = WorldDexUI()
+    
+    # Refresh all data at startup
+    ui.load_data()
+    ui.quest_system.load_quests()
+    ui.quest_system.load_progress()
+    ui.stats_system.load_stats()
+    ui._check_refresh_signal()  # Clear any leftover refresh signals
+    
     while True:
         ui.render()
         key = get_key()
